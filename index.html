@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Voice Clone Studio</title>
+<style>
+  :root {
+    --ink: #1c1a17;
+    --paper: #faf7f2;
+    --line: #ddd6c8;
+    --accent: #b5562b;
+    --accent-dim: #e8c9b8;
+    --muted: #7a7468;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Georgia', 'Iowan Old Style', serif;
+    display: flex;
+    justify-content: center;
+    padding: 48px 20px;
+  }
+  .wrap { max-width: 640px; width: 100%; }
+  h1 {
+    font-size: 28px;
+    letter-spacing: 0.01em;
+    margin: 0 0 4px;
+  }
+  .sub {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0 0 36px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+  .step {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 22px 24px;
+    margin-bottom: 20px;
+    background: #fff;
+  }
+  .step h2 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin: 0 0 14px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+  input[type="text"], textarea, select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    background: var(--paper);
+    color: var(--ink);
+    margin-bottom: 14px;
+  }
+  textarea { resize: vertical; min-height: 90px; }
+  input[type="file"] { margin-bottom: 14px; font-size: 13px; }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 3px;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+  button:disabled { background: var(--accent-dim); cursor: not-allowed; }
+  button:hover:not(:disabled) { background: #93431f; }
+  .status {
+    font-size: 13px;
+    margin-top: 10px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+  .status.err { color: #b3261e; }
+  .status.ok { color: #2e6b3e; }
+  audio { width: 100%; margin-top: 14px; }
+  .voice-pill {
+    display: inline-block;
+    background: var(--accent-dim);
+    color: #5a2c14;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    margin-top: 8px;
+    word-break: break-all;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Voice Clone Studio</h1>
+  <p class="sub">Upload a 10–20 second clip, then type anything to hear it spoken back in that voice.</p>
+
+  <div class="step">
+    <h2>1. Clone a voice</h2>
+    <label for="voiceName">Name this voice</label>
+    <input type="text" id="voiceName" placeholder="e.g. narrator" maxlength="16" />
+    <label for="audioFile">Audio clip (WAV, MP3, or M4A — 10 to 20s recommended)</label>
+    <input type="file" id="audioFile" accept=".wav,.mp3,.m4a" />
+    <button id="cloneBtn">Clone voice</button>
+    <div id="cloneStatus" class="status"></div>
+  </div>
+
+  <div class="step">
+    <h2>2. Generate audio</h2>
+    <label for="text">Text to speak</label>
+    <textarea id="text" placeholder="Type what you want the cloned voice to say..."></textarea>
+    <button id="generateBtn" disabled>Generate audio</button>
+    <div id="generateStatus" class="status"></div>
+    <audio id="player" controls style="display:none;"></audio>
+  </div>
+</div>
+
+<script>
+let currentVoice = null;
+
+const cloneBtn = document.getElementById('cloneBtn');
+const cloneStatus = document.getElementById('cloneStatus');
+const generateBtn = document.getElementById('generateBtn');
+const generateStatus = document.getElementById('generateStatus');
+const player = document.getElementById('player');
+
+cloneBtn.addEventListener('click', async () => {
+  const fileInput = document.getElementById('audioFile');
+  const name = document.getElementById('voiceName').value || 'myvoice';
+
+  if (!fileInput.files[0]) {
+    cloneStatus.textContent = 'Please choose an audio file first.';
+    cloneStatus.className = 'status err';
+    return;
+  }
+
+  cloneBtn.disabled = true;
+  cloneStatus.textContent = 'Cloning voice... this can take a few seconds.';
+  cloneStatus.className = 'status';
+
+  const formData = new FormData();
+  formData.append('audio', fileInput.files[0]);
+  formData.append('name', name);
+
+  try {
+    const res = await fetch('/api/clone-voice', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) throw new Error(data.error || 'Cloning failed.');
+
+    currentVoice = data.voice;
+    cloneStatus.innerHTML = 'Voice cloned successfully.<br><span class="voice-pill">' + data.voice + '</span>';
+    cloneStatus.className = 'status ok';
+    generateBtn.disabled = false;
+  } catch (err) {
+    cloneStatus.textContent = err.message;
+    cloneStatus.className = 'status err';
+  } finally {
+    cloneBtn.disabled = false;
+  }
+});
+
+generateBtn.addEventListener('click', async () => {
+  const text = document.getElementById('text').value.trim();
+  if (!text) {
+    generateStatus.textContent = 'Type some text first.';
+    generateStatus.className = 'status err';
+    return;
+  }
+  if (!currentVoice) {
+    generateStatus.textContent = 'Clone a voice first.';
+    generateStatus.className = 'status err';
+    return;
+  }
+
+  generateBtn.disabled = true;
+  generateStatus.textContent = 'Generating audio...';
+  generateStatus.className = 'status';
+  player.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice: currentVoice })
+    });
+    const data = await res.json();
+
+    if (!res.ok) throw new Error(data.error || 'Generation failed.');
+
+    const audioSrc = 'data:audio/wav;base64,' + data.audio;
+    player.src = audioSrc;
+    player.style.display = 'block';
+    player.play();
+
+    generateStatus.textContent = 'Done.';
+    generateStatus.className = 'status ok';
+  } catch (err) {
+    generateStatus.textContent = err.message;
+    generateStatus.className = 'status err';
+  } finally {
+    generateBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
