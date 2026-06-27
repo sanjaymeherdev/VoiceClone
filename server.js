@@ -2,6 +2,34 @@ require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const { put, list } = require('@vercel/blob');
+
+const VOICES_BLOB_PATH = 'voices.json';
+
+// Load the saved-voices list from Blob storage. Returns [] if it doesn't exist yet.
+async function loadSavedVoices() {
+  try {
+    const { blobs } = await list({ prefix: VOICES_BLOB_PATH });
+    const match = blobs.find((b) => b.pathname === VOICES_BLOB_PATH);
+    if (!match) return [];
+    const response = await fetch(match.url);
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.error('Failed to load saved voices:', err);
+    return [];
+  }
+}
+
+// Overwrite the saved-voices list in Blob storage.
+async function saveSavedVoices(voices) {
+  await put(VOICES_BLOB_PATH, JSON.stringify(voices, null, 2), {
+    access: 'public',
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    contentType: 'application/json'
+  });
+}
 
 const app = express();
 const upload = multer({
@@ -80,37 +108,44 @@ app.post('/api/clone-voice', upload.single('audio'), async (req, res) => {
       });
     }
 
-    res.json({ voice: data.output.voice, target_model: TARGET_MODEL });
+    const voiceRecord = {
+      voice: data.output.voice,
+      name: preferredName,
+      target_model: TARGET_MODEL,
+      created: new Date().toISOString()
+    };
+
+    // Persist to Blob storage so it's available across sessions/deploys
+    try {
+      const saved = await loadSavedVoices();
+      saved.push(voiceRecord);
+      await saveSavedVoices(saved);
+    } catch (err) {
+      // Cloning itself succeeded, so don't fail the request over a storage hiccup
+      console.error('Failed to persist voice to Blob storage:', err);
+    }
+
+    res.json(voiceRecord);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error while cloning voice.' });
   }
 });
 
-// ---- 2. List previously cloned voices ----
+// ---- 2. List saved voices (from Blob storage) ----
 app.get('/api/voices', async (_req, res) => {
   try {
-    const response = await fetch(CLONE_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'qwen-voice-enrollment',
-        input: { action: 'list', page_size: 50, page_index: 0 }
-      })
-    });
-    const data = await response.json();
-    if (!response.ok) return res.status(response.status).json({ error: data?.message });
-    res.json(data.output || {});
+    const voices = await loadSavedVoices();
+    // Most recently created first
+    voices.sort((a, b) => new Date(b.created) - new Date(a.created));
+    res.json({ voices });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error while listing voices.' });
+    res.status(500).json({ error: 'Server error while listing saved voices.' });
   }
 });
 
-// ---- 3. Delete a voice ----
+// ---- 3. Delete a voice (from DashScope and from saved list) ----
 app.post('/api/delete-voice', async (req, res) => {
   try {
     const { voice } = req.body;
@@ -129,6 +164,11 @@ app.post('/api/delete-voice', async (req, res) => {
     });
     const data = await response.json();
     if (!response.ok) return res.status(response.status).json({ error: data?.message });
+
+    const saved = await loadSavedVoices();
+    const updated = saved.filter((v) => v.voice !== voice);
+    await saveSavedVoices(updated);
+
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
