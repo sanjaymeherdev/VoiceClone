@@ -101,6 +101,33 @@
     margin-top: 8px;
     word-break: break-all;
   }
+  .voice-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+  .voice-row:last-child { border-bottom: none; }
+  .voice-row.active { background: #fbf0e8; }
+  .voice-info { font-size: 13px; }
+  .voice-info .name { font-weight: 600; }
+  .voice-info .meta { color: var(--muted); font-size: 11px; }
+  .voice-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .btn-small {
+    padding: 5px 12px;
+    font-size: 12px;
+    border-radius: 3px;
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .btn-small.use { background: var(--accent); color: #fff; border: none; }
+  .btn-small.danger { border-color: #b3261e; color: #b3261e; }
+  .btn-small:hover { opacity: 0.8; }
 </style>
 </head>
 <body>
@@ -119,7 +146,13 @@
   </div>
 
   <div class="step">
-    <h2>2. Generate audio</h2>
+    <h2>2. Saved voices</h2>
+    <div id="voiceList" class="status">Loading...</div>
+  </div>
+
+  <div class="step">
+    <h2>3. Generate audio</h2>
+    <div id="activeVoice" class="status">No voice selected yet.</div>
     <label for="text">Text to speak</label>
     <textarea id="text" placeholder="Type what you want the cloned voice to say..."></textarea>
     <button id="generateBtn" disabled>Generate audio</button>
@@ -130,12 +163,96 @@
 
 <script>
 let currentVoice = null;
+let savedVoices = [];
 
 const cloneBtn = document.getElementById('cloneBtn');
 const cloneStatus = document.getElementById('cloneStatus');
 const generateBtn = document.getElementById('generateBtn');
 const generateStatus = document.getElementById('generateStatus');
 const player = document.getElementById('player');
+const voiceListEl = document.getElementById('voiceList');
+const activeVoiceEl = document.getElementById('activeVoice');
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function setActiveVoice(voice, name) {
+  currentVoice = voice;
+  activeVoiceEl.innerHTML = voice
+    ? 'Using <span class="voice-pill">' + escapeHtml(name || voice) + '</span>'
+    : 'No voice selected yet.';
+  generateBtn.disabled = !voice;
+  renderVoiceList();
+}
+
+function renderVoiceList() {
+  if (!savedVoices.length) {
+    voiceListEl.textContent = 'No saved voices yet — clone one above.';
+    return;
+  }
+  voiceListEl.innerHTML = savedVoices.map((v) => {
+    const isActive = v.voice === currentVoice;
+    const date = new Date(v.created).toLocaleDateString();
+    return (
+      '<div class="voice-row' + (isActive ? ' active' : '') + '">' +
+        '<div class="voice-info">' +
+          '<div class="name">' + escapeHtml(v.name) + '</div>' +
+          '<div class="meta">' + date + '</div>' +
+        '</div>' +
+        '<div class="voice-actions">' +
+          '<button class="btn-small use" data-voice="' + escapeHtml(v.voice) + '" data-name="' + escapeHtml(v.name) + '">' +
+            (isActive ? 'Selected' : 'Use') +
+          '</button>' +
+          '<button class="btn-small danger" data-delete="' + escapeHtml(v.voice) + '">Delete</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('');
+}
+
+async function loadSavedVoices() {
+  voiceListEl.textContent = 'Loading...';
+  try {
+    const res = await fetch('/api/voices');
+    const data = await res.json();
+    savedVoices = data.voices || [];
+    renderVoiceList();
+  } catch (err) {
+    voiceListEl.textContent = 'Could not load saved voices.';
+  }
+}
+
+voiceListEl.addEventListener('click', async (e) => {
+  const useBtn = e.target.closest('[data-voice]');
+  const delBtn = e.target.closest('[data-delete]');
+
+  if (useBtn) {
+    setActiveVoice(useBtn.dataset.voice, useBtn.dataset.name);
+  }
+
+  if (delBtn) {
+    if (!confirm('Delete this voice permanently?')) return;
+    delBtn.textContent = 'Deleting...';
+    delBtn.disabled = true;
+    try {
+      const res = await fetch('/api/delete-voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: delBtn.dataset.delete })
+      });
+      if (!res.ok) throw new Error('Delete failed.');
+      if (currentVoice === delBtn.dataset.delete) setActiveVoice(null, null);
+      await loadSavedVoices();
+    } catch (err) {
+      alert(err.message);
+      delBtn.textContent = 'Delete';
+      delBtn.disabled = false;
+    }
+  }
+});
 
 cloneBtn.addEventListener('click', async () => {
   const fileInput = document.getElementById('audioFile');
@@ -161,10 +278,11 @@ cloneBtn.addEventListener('click', async () => {
 
     if (!res.ok) throw new Error(data.error || 'Cloning failed.');
 
-    currentVoice = data.voice;
-    cloneStatus.innerHTML = 'Voice cloned successfully.<br><span class="voice-pill">' + data.voice + '</span>';
+    cloneStatus.innerHTML = 'Voice cloned and saved.<br><span class="voice-pill">' + data.voice + '</span>';
     cloneStatus.className = 'status ok';
-    generateBtn.disabled = false;
+
+    await loadSavedVoices();
+    setActiveVoice(data.voice, data.name);
   } catch (err) {
     cloneStatus.textContent = err.message;
     cloneStatus.className = 'status err';
@@ -181,7 +299,7 @@ generateBtn.addEventListener('click', async () => {
     return;
   }
   if (!currentVoice) {
-    generateStatus.textContent = 'Clone a voice first.';
+    generateStatus.textContent = 'Select a voice first.';
     generateStatus.className = 'status err';
     return;
   }
@@ -215,6 +333,8 @@ generateBtn.addEventListener('click', async () => {
     generateBtn.disabled = false;
   }
 });
+
+loadSavedVoices();
 </script>
 </body>
 </html>
