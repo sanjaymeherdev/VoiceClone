@@ -207,6 +207,12 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Voice clone app running at http://localhost:${PORT}`);
-});
+// Only listen on a port when run directly (local dev).
+// On Vercel, the app is imported and invoked as a serverless function instead.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Voice clone app running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
