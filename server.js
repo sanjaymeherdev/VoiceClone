@@ -31,7 +31,50 @@ async function saveSavedVoices(voices) {
   });
 }
 
-const app = express();
+// Build a proper WAV file header for raw 16-bit PCM data.
+function buildWavHeader(dataSize, sampleRate, numChannels, bitsPerSample) {
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const byteRate = sampleRate * blockAlign;
+  const header = Buffer.alloc(44);
+
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);            // fmt chunk size
+  header.writeUInt16LE(1, 20);             // PCM format
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(dataSize, 40);
+
+  return header;
+}
+
+// Qwen streams a WAV file whose header is written before the final length is
+// known, so the data-chunk size in the header ends up as 0 — that's exactly
+// why browsers show "0:00" duration even though the audio plays. Strip
+// whatever header is there and rebuild it with the real size, preserving the
+// original sample rate / channels / bit depth if we can read them.
+function repairWav(buffer) {
+  const hasRiffHeader = buffer.length >= 44 && buffer.toString('ascii', 0, 4) === 'RIFF';
+
+  if (hasRiffHeader) {
+    const numChannels = buffer.readUInt16LE(22);
+    const sampleRate = buffer.readUInt32LE(24);
+    const bitsPerSample = buffer.readUInt16LE(34);
+    const pcmData = buffer.subarray(44);
+    const header = buildWavHeader(pcmData.length, sampleRate, numChannels, bitsPerSample);
+    return Buffer.concat([header, pcmData]);
+  }
+
+  // No header at all — raw PCM. Qwen-Omni's audio output is mono, 24kHz, 16-bit.
+  const header = buildWavHeader(buffer.length, 24000, 1, 16);
+  return Buffer.concat([header, buffer]);
+}
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10 MB, matches API limit
@@ -206,8 +249,9 @@ app.post('/api/generate', async (req, res) => {
       return res.status(response.status).json({ error: 'Audio generation failed.' });
     }
 
-    // Parse the SSE stream and reassemble the base64 audio + text
-    let audioBase64 = '';
+    // Parse the SSE stream. Qwen's own reference clients concatenate the
+    // base64 *text* of each delta and decode once at the end — do the same.
+    let audioBase64Raw = '';
     let transcript = '';
     let buffer = '';
 
@@ -230,15 +274,19 @@ app.post('/api/generate', async (req, res) => {
         }
 
         const delta = json?.choices?.[0]?.delta;
-        if (delta?.audio?.data) audioBase64 += delta.audio.data;
+        if (delta?.audio?.data) audioBase64Raw += delta.audio.data;
         if (delta?.audio?.transcript) transcript += delta.audio.transcript;
         if (typeof delta?.content === 'string') transcript += delta.content;
       }
     }
 
-    if (!audioBase64) {
+    if (!audioBase64Raw) {
       return res.status(502).json({ error: 'No audio returned by the model.' });
     }
+
+    const decoded = Buffer.from(audioBase64Raw, 'base64');
+    const wavBuffer = repairWav(decoded); // fixes the 0-byte data-chunk-size issue
+    const audioBase64 = wavBuffer.toString('base64');
 
     res.json({ audio: audioBase64, transcript, format: 'wav' });
   } catch (err) {
