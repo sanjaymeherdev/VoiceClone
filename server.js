@@ -251,12 +251,22 @@ app.post('/api/generate', async (req, res) => {
 
     // Parse the SSE stream. Qwen's own reference clients concatenate the
     // base64 *text* of each delta and decode once at the end — do the same.
+    // Use getReader() rather than `for await...of response.body` — the
+    // latter relies on Symbol.asyncIterator on a WHATWG ReadableStream,
+    // which isn't reliably supported across Node runtimes (this is what
+    // was crashing the Vercel function).
     let audioBase64Raw = '';
     let transcript = '';
     let buffer = '';
 
-    for await (const chunk of response.body) {
-      buffer += Buffer.from(chunk).toString('utf8');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop(); // keep any incomplete line for next iteration
 
